@@ -26,7 +26,7 @@ class FakeLidar(Node):
 
 def main():
     rclpy.init()
-    node = FakeLidar(obstacle_distance=0.3)
+    node = FakeLidar(obstacle_distance=1.0)
     rclpy.spin(node)
     rclpy.shutdown()
 
