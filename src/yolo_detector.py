@@ -14,7 +14,7 @@ class YoloDetectorNode(Node):
         super().__init__('yolo_detector')
         
         # Load YOLOv8 nano model (fastest, good enough for real-time)
-        self.model = YOLO('yolov8n.pt')
+        self.model = YOLO('/workspace/go2-guide-dog-ros2/yolov8n.pt')
         self.bridge = CvBridge()
         
         # Subscribe to camera topic
