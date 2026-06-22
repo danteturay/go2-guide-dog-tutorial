@@ -34,22 +34,62 @@ class ObstacleAvoidanceNode(Node):
         self.min_distance = float('inf')
         self.latest_detection = None
 
-        self.get_logger().info('Obstacle avoidance node started (PointCloud2)')
+        # Cache field offsets per-message-layout so we don't re-parse the
+        # fields list on every single point. Keyed by a layout fingerprint.
+        self._offset_cache = {}
+
+        self.get_logger().info('Obstacle avoidance node started (PointCloud2, dynamic field offsets)')
 
     def detection_callback(self, msg):
         self.latest_detection = msg.data
 
+    def get_xyz_offsets(self, msg):
+        """
+        Read the actual field layout from the PointCloud2 message instead of
+        assuming x/y/z always sit at bytes 0/4/8. Different LiDAR drivers
+        (simulated Velodyne vs real Livox, etc.) can order or pad fields
+        differently, so this makes the node portable between sim and the
+        real robot without code changes.
+        """
+        # Build a fingerprint of the field layout so we only recompute when
+        # it actually changes (e.g. switching sensors), not on every message.
+        fingerprint = tuple((f.name, f.offset, f.datatype) for f in msg.fields)
+        if fingerprint in self._offset_cache:
+            return self._offset_cache[fingerprint]
+
+        offsets = {}
+        for field in msg.fields:
+            if field.name in ('x', 'y', 'z'):
+                offsets[field.name] = field.offset
+
+        if not all(k in offsets for k in ('x', 'y', 'z')):
+            self.get_logger().error(
+                f'PointCloud2 message is missing x/y/z fields. '
+                f'Found fields: {[f.name for f in msg.fields]}'
+            )
+            result = None
+        else:
+            result = (offsets['x'], offsets['y'], offsets['z'])
+
+        self._offset_cache[fingerprint] = result
+        return result
+
     def pointcloud_callback(self, msg):
+        offsets = self.get_xyz_offsets(msg)
+        if offsets is None:
+            return  # can't safely parse this message, skip it
+
+        x_off, y_off, z_off = offsets
         point_step = msg.point_step
         data = msg.data
         min_dist = float('inf')
 
         for i in range(msg.width * msg.height):
-            offset = i * point_step
+            base = i * point_step
             try:
-                x = struct.unpack_from('f', data, offset)[0]
-                y = struct.unpack_from('f', data, offset + 4)[0]
-                z = struct.unpack_from('f', data, offset + 8)[0]
+                x = struct.unpack_from('f', data, base + x_off)[0]
+                y = struct.unpack_from('f', data, base + y_off)[0]
+                z = struct.unpack_from('f', data, base + z_off)[0]
             except struct.error:
                 continue
 
@@ -78,7 +118,6 @@ class ObstacleAvoidanceNode(Node):
         status = String()
 
         if self.min_distance < STOP_DISTANCE:
-            # Block forward movement only - allow backward and turning at full speed
             safe_cmd.linear.x = 0.0 if cmd.linear.x > 0 else cmd.linear.x
             safe_cmd.angular.z = cmd.angular.z
 
@@ -88,7 +127,6 @@ class ObstacleAvoidanceNode(Node):
             self.get_logger().warn(status.data)
 
         elif self.min_distance < SLOW_DISTANCE:
-            # Only slow forward movement - backward and turning stay normal
             safe_cmd.linear.x = cmd.linear.x * SLOW_SPEED_FACTOR if cmd.linear.x > 0 else cmd.linear.x
             safe_cmd.angular.z = cmd.angular.z
 
