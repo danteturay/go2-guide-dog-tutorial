@@ -14,6 +14,13 @@ MIN_HEIGHT = -0.1
 MAX_HEIGHT = 1.5
 FRONT_ANGLE = 60
 
+# If no LiDAR message arrives within this many seconds, treat it as a sensor
+# failure and force the robot to stop, regardless of the last known distance.
+# This protects against the robot continuing to move on stale data if the
+# LiDAR driver crashes, the cable disconnects, or the network drops packets.
+LIDAR_TIMEOUT_SEC = 1.0
+WATCHDOG_CHECK_PERIOD_SEC = 0.5
+
 class ObstacleAvoidanceNode(Node):
     def __init__(self):
         super().__init__('obstacle_avoidance')
@@ -34,25 +41,23 @@ class ObstacleAvoidanceNode(Node):
         self.min_distance = float('inf')
         self.latest_detection = None
 
-        # Cache field offsets per-message-layout so we don't re-parse the
-        # fields list on every single point. Keyed by a layout fingerprint.
         self._offset_cache = {}
 
-        self.get_logger().info('Obstacle avoidance node started (PointCloud2, dynamic field offsets)')
+        # Watchdog state
+        self.last_scan_time = self.get_clock().now()
+        self.lidar_stale = False
+        self.watchdog_timer = self.create_timer(
+            WATCHDOG_CHECK_PERIOD_SEC, self.check_lidar_staleness
+        )
+
+        self.get_logger().info(
+            'Obstacle avoidance node started (PointCloud2, dynamic field offsets, LiDAR watchdog)'
+        )
 
     def detection_callback(self, msg):
         self.latest_detection = msg.data
 
     def get_xyz_offsets(self, msg):
-        """
-        Read the actual field layout from the PointCloud2 message instead of
-        assuming x/y/z always sit at bytes 0/4/8. Different LiDAR drivers
-        (simulated Velodyne vs real Livox, etc.) can order or pad fields
-        differently, so this makes the node portable between sim and the
-        real robot without code changes.
-        """
-        # Build a fingerprint of the field layout so we only recompute when
-        # it actually changes (e.g. switching sensors), not on every message.
         fingerprint = tuple((f.name, f.offset, f.datatype) for f in msg.fields)
         if fingerprint in self._offset_cache:
             return self._offset_cache[fingerprint]
@@ -74,10 +79,40 @@ class ObstacleAvoidanceNode(Node):
         self._offset_cache[fingerprint] = result
         return result
 
+    def check_lidar_staleness(self):
+        """
+        Runs on a timer independent of message arrival. If too long has
+        passed since the last LiDAR message, force a stop. This is the
+        failsafe: pointcloud_callback() only runs when data arrives, so it
+        can never detect the absence of data on its own.
+        """
+        elapsed = (self.get_clock().now() - self.last_scan_time).nanoseconds / 1e9
+
+        if elapsed > LIDAR_TIMEOUT_SEC:
+            if not self.lidar_stale:
+                # Only log on the transition, not every 0.5s while stale
+                self.get_logger().error(
+                    f'LiDAR data stale ({elapsed:.1f}s since last message) - '
+                    f'forcing stop as a safety failsafe'
+                )
+            self.lidar_stale = True
+
+            stop_cmd = Twist()
+            status = String()
+            status.data = 'STOP: LiDAR data unavailable (failsafe)'
+            self.cmd_publisher.publish(stop_cmd)
+            self.status_publisher.publish(status)
+        else:
+            if self.lidar_stale:
+                self.get_logger().info('LiDAR data resumed - failsafe lifted')
+            self.lidar_stale = False
+
     def pointcloud_callback(self, msg):
+        self.last_scan_time = self.get_clock().now()
+
         offsets = self.get_xyz_offsets(msg)
         if offsets is None:
-            return  # can't safely parse this message, skip it
+            return
 
         x_off, y_off, z_off = offsets
         point_step = msg.point_step
@@ -111,9 +146,18 @@ class ObstacleAvoidanceNode(Node):
 
     def cmd_callback(self, msg):
         self.latest_cmd = msg
-        self.apply_safety(msg)
+        # Don't act on movement commands if the LiDAR is stale - the
+        # watchdog is already forcing stops independently.
+        if not self.lidar_stale:
+            self.apply_safety(msg)
 
     def apply_safety(self, cmd):
+        # If the watchdog has already declared the LiDAR stale, it owns
+        # publishing - don't let a normal safety decision override the
+        # failsafe stop.
+        if self.lidar_stale:
+            return
+
         safe_cmd = Twist()
         status = String()
 
