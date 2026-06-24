@@ -100,7 +100,7 @@ python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
 ### 5. Launch everything
 
-Open **5 terminals**. In each one, run:
+Open **3 terminals**. In each one, run:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/go2_ws/install/setup.bash
@@ -109,21 +109,17 @@ source ~/go2_ws/install/setup.bash
 Then, one command per terminal:
 
 ```bash
-# Terminal 1 - the simulation
+# Terminal 1 - The simulation
 ros2 launch go2_config gazebo_velodyne.launch.py
 
-# Terminal 2 - the safety filter
-cd ~/go2-guide-dog-ros2 && python3 src/obstacle_avoidance.py
+# Terminal 2 - The safety and perception stack
+# This starts obstacle avoidance, YOLO detection, and voice feedback.
+# (Add 'use_voice_commands:=true' to the end of this command if you have a microphone)
+cd ~/go2-guide-dog-ros2
+ros2 launch guide_dog_launch.py
 
-# Terminal 3 - object detection
-cd ~/go2-guide-dog-ros2 && python3 src/yolo_detector.py
-
-# Terminal 4 - voice feedback
-cd ~/go2-guide-dog-ros2 && python3 src/voice_feedback.py
-
-# Terminal 5 - control the robot (pick one)
-cd ~/go2-guide-dog-ros2 && python3 src/voice_commands.py
-# OR, easier for a first test:
+# Terminal 3 - Control the robot
+# Use this to drive the robot via keyboard if you are not using voice commands.
 ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/cmd_vel_raw
 ```
 
@@ -259,5 +255,5 @@ ros2 topic echo /detections
 
 ## Authors
 
-Dante Turay — University of Southampton, 2026
+Dante Turay - University of Southampton, 2026
 Supervised by Dr Mohammad Soorati
