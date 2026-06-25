@@ -35,7 +35,9 @@ A movement command (from voice or keyboard) goes through a safety filter before 
 
 ---
 
-## Quick Start
+## Quick Start (Simulation)
+
+> Everything in this section runs against **Gazebo**, not the physical robot. For the real Go2, skip to [Moving to the Real Robot](#moving-to-the-real-robot).
 
 ### 1. Run the setup script
 
@@ -161,7 +163,7 @@ If all of that works, you have a fully functioning simulated demo.
 | "go back" | Moves backward |
 | "faster" / "speed up" | Moves at 0.8 m/s |
 
-### ROS2 Topics
+### ROS2 Topics (Simulation)
 
 | Topic | Type | Description |
 |---|---|---|
@@ -193,15 +195,113 @@ Plain Gazebo primitive shapes (boxes, spheres, cylinders) have no texture or rea
 
 ## Moving to the Real Robot
 
-The real Go2 uses different topic names than the simulation:
+> Everything below targets the **physical Go2**, over a wired Ethernet connection. None of it touches Gazebo.
+
+The real robot uses different topic names than the simulation:
 
 | Data | Simulation Topic | Real Robot Topic |
 |---|---|---|
 | LiDAR | `/velodyne_points` | `/utlidar/cloud` |
 | Camera | `/camera/image_raw` | `/camera/color/image_raw` |
 
-Connect via Ethernet, configure CycloneDDS for your network interface (see the Unitree `unitree_ros2` SDK docs), then either remap topics at launch or update the topic names in `obstacle_avoidance.py` and `yolo_detector.py` directly.
+The Go2's lower communication layers run on **CycloneDDS**, which ROS2 also uses as its middleware. That's why real-robot topics show up in the normal ROS2 graph rather than needing a separate capture step — but you do need the `unitree_ros2` package built and sourced first; `/utlidar/cloud` does not exist until that's running.
 
+### 1. Physical connection
+
+1. Plug an Ethernet cable into the RJ45 port on the robot's trunk.
+2. Identify which interface came up:
+   ```bash
+   ifconfig
+   ```
+3. Set that interface to a static IPv4 address on the robot's subnet:
+   - **IP Address:** `192.168.123.99` (Unitree's documented example)
+   - **Netmask:** `255.255.255.0`
+   ```bash
+   sudo ip addr add 192.168.123.99/24 dev enp3s0   # replace enp3s0 with your interface
+   ```
+4. Confirm connectivity to the robot's onboard computer:
+   ```bash
+   ping 192.168.123.18
+   ```
+   The robot-side IP varies by firmware/model - some setups use `.161`, others `.18` or `.10`. Check against what was actually observed on this unit rather than assuming one value.
+
+### 2. Build and source unitree_ros2
+
+```bash
+git clone https://github.com/unitreerobotics/unitree_ros2
+cd unitree_ros2
+sudo apt install ros-foxy-rmw-cyclonedds-cpp ros-foxy-rosidl-generator-dds-idl libyaml-cpp-dev
+```
+
+Build CycloneDDS itself (ROS2 **not** sourced in this terminal):
+```bash
+cd cyclonedds_ws/src
+git clone https://github.com/ros2/rmw_cyclonedds -b foxy
+git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
+cd ..
+colcon build --packages-select cyclonedds
+```
+
+Then build the Unitree message packages (ROS2 sourced):
+```bash
+source /opt/ros/foxy/setup.bash
+colcon build
+source install/setup.bash
+ros2 topic list   # should now include /utlidar/cloud, /lowstate, /sportmodestate
+```
+
+> If this robot has the newer "OM brainpack" board revision, Unitree instead documents a **Zenoh bridge** (`zenoh-bridge-ros2dds`) rather than CycloneDDS directly. Check the board before assuming the steps above apply.
+
+### 3. Point the project at the real topics
+
+Either remap at launch:
+```bash
+ros2 launch guide_dog_launch.py lidar_topic:=/utlidar/cloud camera_topic:=/camera/color/image_raw
+```
+or update the topic names directly in `obstacle_avoidance.py` and `yolo_detector.py`.
+
+### 4. Visualising LiDAR in RViz2 (optional, for debugging)
+
+```bash
+rviz2
+```
+1. Click **Add** (bottom left) → **By topic** → `/utlidar/cloud` → **PointCloud2**.
+2. Under **Global Options**, set **Fixed Frame** to `utlidar_lidar` (this is the actual frame name from Unitree's own examples).
+3. In the PointCloud2 display options: set **Style** to `Squares` or `Boxes`, **Size (m)** to ~0.02–0.03, and **Decay Time** to `5.0`+ to see structure trace out as the sensor moves.
+
+If the frame doesn't resolve, check the actual TF tree:
+```bash
+ros2 run tf2_tools view_frames
+```
+
+### Known quirks on real hardware
+
+- Some setups report the Go2's published ROS2 timestamps running ~12 seconds behind system time. If you see TF or sync errors, check clock sync before assuming a connection fault.
+- Community SDKs (e.g. WebRTC/Wi-Fi-based projects, Zenoh-based projects) use different topic names than `unitree_ros2`. Confirm which stack is actually running before debugging a "missing" topic.
+- Confirm your specific unit actually has the LiDAR module fitted before troubleshooting an empty `/utlidar/cloud` topic.
+
+---
+
+## SSH Access to the Onboard Jetson
+
+The Go2's onboard computer (Jetson-based) is reachable over the same Ethernet link once your static IP is set up as above.
+
+```bash
+ssh unitree@192.168.123.18
+```
+
+- **Default IP vary depending on which go2 robot is in use**
+- First connection will prompt to accept the host key - type `yes`.
+- Once in, useful checks:
+  ```bash
+  ros2 topic list          # confirm the DDS graph is visible from inside the robot too
+  systemctl status <service>   # check status of any onboard services, if applicable
+  ```
+- To copy files to/from the Jetson:
+  ```bash
+  scp local_file.py unitree@192.168.123.18:/path/on/jetson/
+  scp unitree@192.168.123.18:/path/on/jetson/remote_file.py .
+  ```
 ---
 
 ## Appendix A: Setting up a VM
@@ -221,7 +321,7 @@ If you don't have an Ubuntu 22.04 machine available, a virtual machine works fin
    sudo reboot
    ```
 
-Then continue from [Quick Start](#quick-start) above.
+Then continue from [Quick Start](#quick-start-simulation) above.
 
 ---
 
