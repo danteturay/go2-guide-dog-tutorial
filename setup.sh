@@ -7,6 +7,9 @@ set -e  # stop on first error
 echo "=== Updating system ==="
 sudo apt update && sudo apt upgrade -y
 
+echo "=== Adding general tools ==="
+sudo apt install git -y
+
 echo "=== Adding ROS2 package repository ==="
 sudo apt install curl software-properties-common -y
 sudo add-apt-repository universe -y
@@ -17,8 +20,29 @@ sudo apt update
 echo "=== Installing ROS2 Humble ==="
 sudo apt install ros-humble-desktop -y
 
-echo "=== Installing Gazebo and core tools ==="
-sudo apt install ros-humble-ros-gz ignition-fortress python3-colcon-common-extensions -y
+echo "=== Checking system architecture ==="
+ARCH=$(dpkg --print-architecture)
+if [ "$ARCH" != "amd64" ]; then
+    echo ""
+    echo "!!! This script targets amd64 (standard Intel/AMD machines and VMs)."
+    echo "!!! Detected architecture: $ARCH"
+    echo "!!! Gazebo Classic's ROS2 bridge packages (gazebo-ros-pkgs) are only"
+    echo "!!! published for amd64 - they are not available on arm64 (e.g. Apple"
+    echo "!!! Silicon Macs, Raspberry Pi, ARM laptops) and this script will fail"
+    echo "!!! partway through if you continue on this machine."
+    echo "!!!"
+    echo "!!! If you're on an ARM machine, run this inside an amd64 VM instead"
+    echo "!!! (e.g. VMware/VirtualBox/UTM configured to emulate x86_64), or use"
+    echo "!!! a native amd64 Ubuntu machine."
+    read -p "Continue anyway? (not recommended) [y/N] " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
+echo "=== Installing Gazebo Classic and core tools ==="
+sudo apt install ros-humble-gazebo-ros-pkgs python3-colcon-common-extensions -y
 
 echo "=== Installing Go2 simulation dependencies ==="
 sudo apt install ros-humble-gazebo-ros2-control ros-humble-xacro \
